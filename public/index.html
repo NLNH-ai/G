@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>SeatCast | 3인 좌석 화상회의</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Lexend:wght@400;500;700&family=Noto+Sans+KR:wght@400;500;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div class="background-layer"></div>
+    <main class="app-shell">
+      <header class="topbar card">
+        <div>
+          <p class="eyebrow">VIDEO COLLAB</p>
+          <h1>SeatCast 회의실</h1>
+          <p class="subtitle">3인 전용 가상 좌석 화상회의</p>
+        </div>
+        <span id="connection-status" class="status-pill">대기중</span>
+      </header>
+
+      <section id="join-view" class="card join-card">
+        <h2>회의 참여</h2>
+        <p>카메라 움직임을 따라가는 버추얼 캐릭터를 의자에 앉힌 형태로 표시합니다.</p>
+        <form id="join-form" class="join-form">
+          <label>
+            이름
+            <input id="name-input" type="text" maxlength="24" placeholder="이름 입력" required />
+          </label>
+          <label>
+            회의 코드
+            <input id="room-input" type="text" maxlength="32" value="office-3" required />
+          </label>
+          <button id="join-btn" type="submit">참석하기</button>
+        </form>
+        <p id="join-message" class="join-message"></p>
+      </section>
+
+      <section id="meeting-view" class="meeting-layout hidden">
+        <section class="stage card">
+          <div class="stage-header">
+            <h2 id="room-title">회의실</h2>
+            <p id="capacity-text">0 / 3</p>
+          </div>
+          <div class="seat-grid">
+            <div class="seat-slot" data-slot="left"></div>
+            <div class="seat-slot" data-slot="center"></div>
+            <div class="seat-slot" data-slot="right"></div>
+          </div>
+        </section>
+
+        <aside class="side card">
+          <h3>참석자</h3>
+          <ul id="participant-list" class="participant-list"></ul>
+          <h3>알림</h3>
+          <ul id="event-log" class="event-log"></ul>
+        </aside>
+
+        <section class="controls card">
+          <button id="audio-btn" class="control active">마이크 켜짐</button>
+          <button id="video-btn" class="control active">카메라 켜짐</button>
+          <button id="virtual-btn" class="control active">버추얼 캐릭터 켜짐</button>
+          <button id="leave-btn" class="control danger">회의 나가기</button>
+        </section>
+      </section>
+    </main>
+
+    <template id="seat-template">
+      <article class="seat-card">
+        <canvas class="seat-canvas" width="640" height="540"></canvas>
+        <video class="seat-video" autoplay playsinline></video>
+        <div class="seat-meta">
+          <span class="seat-name"></span>
+          <span class="seat-role"></span>
+        </div>
+      </article>
+    </template>
+
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js"></script>
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>
