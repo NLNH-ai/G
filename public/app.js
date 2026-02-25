@@ -1151,10 +1151,25 @@ function createPeerConnection(peerId, shouldCreateOffer) {
 
   state.peerConnections.set(peerId, connection);
 
+  let hasLocalAudio = false;
+  let hasLocalVideo = false;
   if (state.localStream) {
     for (const track of state.localStream.getTracks()) {
       pc.addTrack(track, state.localStream);
+      if (track.kind === 'audio') {
+        hasLocalAudio = true;
+      } else if (track.kind === 'video') {
+        hasLocalVideo = true;
+      }
     }
+  }
+
+  // Keep receiving peer media even when local camera/mic is unavailable.
+  if (!hasLocalAudio) {
+    pc.addTransceiver('audio', { direction: 'recvonly' });
+  }
+  if (!hasLocalVideo) {
+    pc.addTransceiver('video', { direction: 'recvonly' });
   }
 
   pc.onicecandidate = (event) => {
@@ -1314,6 +1329,8 @@ async function handleServerMessage(message) {
         addLog('마이크 없이 카메라 전용으로 연결되었습니다.');
       } else if (state.mediaMode === 'audio-only') {
         addLog('카메라 없이 음성 전용으로 연결되었습니다.');
+      } else if (state.mediaMode === 'none') {
+        addLog('카메라/마이크 없이 관전자 모드로 연결되었습니다.');
       }
       startRenderLoop();
       break;
@@ -1407,7 +1424,7 @@ async function handleServerMessage(message) {
   }
 }
 
-function connectSocketAndJoin() {
+function connectSocketAndJoin(timeoutMs = 12000) {
   return new Promise((resolve, reject) => {
     const ws = new WebSocket(getSocketUrl());
     let settled = false;
@@ -1421,7 +1438,7 @@ function connectSocketAndJoin() {
         }
         reject(makeCodeError('JOIN_TIMEOUT'));
       }
-    }, 9000);
+    }, timeoutMs);
 
     state.ws = ws;
 
@@ -1485,6 +1502,38 @@ function connectSocketAndJoin() {
       }
     };
   });
+}
+
+function waitMs(ms) {
+  return new Promise((resolve) => {
+    window.setTimeout(resolve, ms);
+  });
+}
+
+async function connectSocketAndJoinWithRetry() {
+  const attempts = [12000, 30000];
+  let lastError = null;
+
+  for (let i = 0; i < attempts.length; i += 1) {
+    try {
+      await connectSocketAndJoin(attempts[i]);
+      return;
+    } catch (error) {
+      lastError = error;
+      const code = error?.code || String(error?.message || '');
+      const retryable = code === 'JOIN_TIMEOUT' || code === 'WS_ERROR' || code === 'WS_CLOSED';
+      const canRetry = i < attempts.length - 1;
+
+      if (!retryable || !canRetry) {
+        throw error;
+      }
+
+      setJoinMessage('서버를 깨우는 중입니다. 자동으로 다시 연결합니다...');
+      await waitMs(900);
+    }
+  }
+
+  throw lastError || makeCodeError('WS_ERROR');
 }
 
 function getDefaultVideoConstraints() {
@@ -1554,7 +1603,11 @@ async function prepareLocalStream() {
         state.mediaMode = 'audio-only';
         return audioOnlyStream;
       } catch (_audioOnlyError) {
-        throw primaryError;
+        // Allow join without local media when devices are occupied/unavailable.
+        const emptyStream = new MediaStream();
+        state.localStream = emptyStream;
+        state.mediaMode = 'none';
+        return emptyStream;
       }
     }
   }
@@ -1785,10 +1838,12 @@ async function joinMeeting(event) {
       setJoinMessage('마이크를 사용할 수 없어 카메라 전용으로 연결중입니다...');
     } else if (state.mediaMode === 'audio-only') {
       setJoinMessage('카메라를 사용할 수 없어 음성 전용으로 연결중입니다...');
+    } else if (state.mediaMode === 'none') {
+      setJoinMessage('카메라/마이크 없이 관전자 모드로 연결중입니다...');
     } else {
       setJoinMessage('회의 서버에 연결중입니다...');
     }
-    await connectSocketAndJoin();
+    await connectSocketAndJoinWithRetry();
     setJoinMessage('');
   } catch (error) {
     console.error(error);
