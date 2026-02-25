@@ -98,8 +98,10 @@ const slotElements = SLOT_ORDER.reduce((acc, slotName) => {
 }, {});
 
 const state = {
+  cameraTrackBeforeShare: null,
   displayName: '',
   intentionalLeave: false,
+  isScreenSharing: false,
   joinCounter: 0,
   joined: false,
   localId: null,
@@ -109,6 +111,8 @@ const state = {
   peerConnections: new Map(),
   renderFrameId: null,
   roomId: '',
+  screenShareStopHandler: null,
+  screenStream: null,
   virtualEnabled: false,
   ws: null,
 };
@@ -294,7 +298,7 @@ class ParticipantView {
     this.ctx.save();
     roundedRectPath(this.ctx, x, y, w, h, 24);
     this.ctx.clip();
-    if (this.isLocal) {
+    if (this.isLocal && !isScreenStream(this.stream)) {
       this.ctx.translate(x + w, y);
       this.ctx.scale(-1, 1);
       drawCoverImage(this.ctx, this.video, 0, 0, w, h);
@@ -952,6 +956,40 @@ function drawCoverImage(ctx, source, x, y, width, height) {
   ctx.drawImage(source, cropX, cropY, cropWidth, cropHeight, x, y, width, height);
 }
 
+function getStreamVideoTrack(stream) {
+  if (!stream) {
+    return null;
+  }
+  return stream.getVideoTracks()[0] || null;
+}
+
+function isScreenTrack(track) {
+  if (!track) {
+    return false;
+  }
+
+  try {
+    const settings = typeof track.getSettings === 'function' ? track.getSettings() : null;
+    if (settings && settings.displaySurface) {
+      return true;
+    }
+  } catch (_error) {
+    // no-op
+  }
+
+  const label = String(track.label || '').toLowerCase();
+  return (
+    label.includes('screen') ||
+    label.includes('window') ||
+    label.includes('tab') ||
+    label.includes('entire')
+  );
+}
+
+function isScreenStream(stream) {
+  return isScreenTrack(getStreamVideoTrack(stream));
+}
+
 function getSocketUrl() {
   const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
   return `${protocol}://${window.location.host}/signal`;
@@ -1170,12 +1208,25 @@ function createPeerConnection(peerId, shouldCreateOffer) {
     pc.addTransceiver('audio', { direction: 'recvonly' });
   }
   if (!hasLocalVideo) {
-    pc.addTransceiver('video', { direction: 'recvonly' });
+    pc.addTransceiver('video', { direction: 'sendrecv' });
   }
 
   pc.onicecandidate = (event) => {
     if (event.candidate) {
       sendSignal(peerId, { candidate: event.candidate });
+    }
+  };
+
+  pc.onnegotiationneeded = async () => {
+    if (pc.signalingState !== 'stable') {
+      return;
+    }
+    try {
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+      sendSignal(peerId, { sdp: pc.localDescription });
+    } catch (error) {
+      console.warn('Renegotiation failed:', error);
     }
   };
 
@@ -1276,6 +1327,7 @@ function closePeerConnection(peerId) {
   state.peerConnections.delete(peerId);
   try {
     connection.pc.onicecandidate = null;
+    connection.pc.onnegotiationneeded = null;
     connection.pc.ontrack = null;
     connection.pc.close();
   } catch (_error) {
@@ -1287,6 +1339,76 @@ function closeAllPeerConnections() {
   for (const peerId of Array.from(state.peerConnections.keys())) {
     closePeerConnection(peerId);
   }
+}
+
+async function replaceOutgoingVideoTrack(nextTrack) {
+  for (const connection of state.peerConnections.values()) {
+    const { pc } = connection;
+    let sender = pc.getSenders().find((item) => item.track && item.track.kind === 'video') || null;
+
+    if (!sender) {
+      const transceiver = pc
+        .getTransceivers()
+        .find((item) => item.receiver && item.receiver.track && item.receiver.track.kind === 'video');
+      if (transceiver) {
+        sender = transceiver.sender || null;
+        try {
+          transceiver.direction = nextTrack ? 'sendrecv' : 'recvonly';
+        } catch (_error) {
+          // no-op
+        }
+      }
+    }
+
+    try {
+      if (sender) {
+        await sender.replaceTrack(nextTrack || null);
+      } else if (nextTrack) {
+        pc.addTrack(nextTrack, state.localStream);
+      }
+    } catch (error) {
+      console.warn('Video track replace failed:', error);
+    }
+  }
+}
+
+function syncLocalPreview() {
+  if (!state.localId || !state.localStream) {
+    return;
+  }
+  const me = state.participantViews.get(state.localId);
+  if (me) {
+    me.attachStream(state.localStream);
+  }
+}
+
+function canShareScreen() {
+  return Boolean(navigator.mediaDevices && typeof navigator.mediaDevices.getDisplayMedia === 'function');
+}
+
+function syncShareButton() {
+  const button = elements.virtualBtn;
+  if (!button) {
+    return;
+  }
+
+  if (!canShareScreen()) {
+    button.disabled = true;
+    button.textContent = '화면공유 미지원';
+    button.classList.remove('active');
+    return;
+  }
+
+  if (!state.joined) {
+    button.disabled = true;
+    button.textContent = '화면공유 시작';
+    button.classList.remove('active');
+    return;
+  }
+
+  button.disabled = false;
+  button.textContent = state.isScreenSharing ? '화면공유 중지' : '화면공유 시작';
+  button.classList.toggle('active', state.isScreenSharing);
 }
 
 async function handleServerMessage(message) {
@@ -1302,6 +1424,7 @@ async function handleServerMessage(message) {
       elements.joinView.classList.add('hidden');
       elements.meetingView.classList.remove('hidden');
       setConnectionStatus('회의 연결됨', true);
+      syncShareButton();
 
       const me = addOrUpdateParticipant({
         id: message.selfId,
@@ -1581,6 +1704,7 @@ async function prepareLocalStream() {
   try {
     const stream = await getMediaWithTimeout({ audio: true, video }, 9000);
     state.localStream = stream;
+    state.cameraTrackBeforeShare = getStreamVideoTrack(stream);
     state.mediaMode = 'audio-video';
     return stream;
   } catch (primaryError) {
@@ -1591,6 +1715,7 @@ async function prepareLocalStream() {
     try {
       const videoOnlyStream = await getMediaWithTimeout({ audio: false, video }, 7000);
       state.localStream = videoOnlyStream;
+      state.cameraTrackBeforeShare = getStreamVideoTrack(videoOnlyStream);
       state.mediaMode = 'video-only';
       return videoOnlyStream;
     } catch (videoOnlyError) {
@@ -1601,12 +1726,14 @@ async function prepareLocalStream() {
       try {
         const audioOnlyStream = await getMediaWithTimeout({ audio: true, video: false }, 7000);
         state.localStream = audioOnlyStream;
+        state.cameraTrackBeforeShare = null;
         state.mediaMode = 'audio-only';
         return audioOnlyStream;
       } catch (_audioOnlyError) {
         // Allow join without local media when devices are occupied/unavailable.
         const emptyStream = new MediaStream();
         state.localStream = emptyStream;
+        state.cameraTrackBeforeShare = null;
         state.mediaMode = 'none';
         return emptyStream;
       }
@@ -1621,11 +1748,9 @@ function syncMediaButtons() {
   if (!stream) {
     elements.audioBtn.disabled = false;
     elements.videoBtn.disabled = false;
-    elements.virtualBtn.disabled = true;
     updateToggleButton(elements.audioBtn, '마이크 켜짐', '마이크 꺼짐', true);
     updateToggleButton(elements.videoBtn, '카메라 켜짐', '카메라 꺼짐', true);
-    elements.virtualBtn.textContent = '일반 카메라 모드';
-    elements.virtualBtn.classList.remove('active');
+    syncShareButton();
     return;
   }
 
@@ -1644,16 +1769,26 @@ function syncMediaButtons() {
   if (videoTrack) {
     elements.videoBtn.disabled = false;
     updateToggleButton(elements.videoBtn, '카메라 켜짐', '카메라 꺼짐', videoTrack.enabled);
-    elements.virtualBtn.disabled = true;
-    elements.virtualBtn.textContent = '일반 카메라 모드';
-    elements.virtualBtn.classList.remove('active');
   } else {
     elements.videoBtn.disabled = true;
     elements.videoBtn.textContent = '카메라 없음';
     elements.videoBtn.classList.remove('active');
-    elements.virtualBtn.disabled = true;
-    elements.virtualBtn.textContent = '일반 카메라 모드';
-    elements.virtualBtn.classList.remove('active');
+  }
+
+  syncShareButton();
+}
+
+function updateMediaModeFromLocalTracks() {
+  const hasAudio = Boolean(state.localStream && state.localStream.getAudioTracks().length);
+  const hasVideo = Boolean(state.localStream && state.localStream.getVideoTracks().length);
+  if (hasAudio && hasVideo) {
+    state.mediaMode = 'audio-video';
+  } else if (hasVideo) {
+    state.mediaMode = 'video-only';
+  } else if (hasAudio) {
+    state.mediaMode = 'audio-only';
+  } else {
+    state.mediaMode = 'none';
   }
 }
 
@@ -1709,6 +1844,11 @@ function toggleVideo() {
     return;
   }
 
+  if (state.isScreenSharing) {
+    setJoinMessage('화면공유 중에는 화면공유 중지를 눌러 먼저 종료해주세요.');
+    return;
+  }
+
   const tracks = state.localStream.getVideoTracks();
   if (!tracks.length) {
     setJoinMessage('현재 카메라 장치를 사용할 수 없습니다.');
@@ -1719,20 +1859,146 @@ function toggleVideo() {
   tracks.forEach((track) => {
     track.enabled = next;
   });
+  updateMediaModeFromLocalTracks();
   updateToggleButton(elements.videoBtn, '카메라 켜짐', '카메라 꺼짐', next);
 }
 
-function toggleVirtual() {
-  setJoinMessage('현재는 일반 카메라 모드로 고정되어 있습니다.');
+async function startScreenShare() {
+  if (!canShareScreen()) {
+    setJoinMessage('현재 기기/브라우저에서는 화면공유를 지원하지 않습니다.');
+    return;
+  }
+
+  if (!state.joined) {
+    setJoinMessage('회의 입장 후 화면공유가 가능합니다.');
+    return;
+  }
+
+  try {
+    const screenStream = await navigator.mediaDevices.getDisplayMedia({
+      audio: false,
+      video: { frameRate: { ideal: 15, max: 30 } },
+    });
+    const screenTrack = getStreamVideoTrack(screenStream);
+    if (!screenTrack) {
+      setJoinMessage('화면공유 비디오 트랙을 찾지 못했습니다.');
+      return;
+    }
+
+    const currentTrack = getStreamVideoTrack(state.localStream);
+    if (currentTrack && !isScreenTrack(currentTrack)) {
+      state.cameraTrackBeforeShare = currentTrack;
+    }
+
+    state.isScreenSharing = true;
+    state.screenStream = screenStream;
+    state.screenShareStopHandler = () => {
+      stopScreenShare(true).catch((error) => {
+        console.error('Stop screen share failed:', error);
+      });
+    };
+    screenTrack.addEventListener('ended', state.screenShareStopHandler, { once: true });
+
+    if (!state.localStream) {
+      state.localStream = new MediaStream();
+    }
+
+    for (const track of state.localStream.getVideoTracks()) {
+      if (track.id !== screenTrack.id) {
+        state.localStream.removeTrack(track);
+      }
+    }
+    if (!state.localStream.getVideoTracks().some((track) => track.id === screenTrack.id)) {
+      state.localStream.addTrack(screenTrack);
+    }
+
+    await replaceOutgoingVideoTrack(screenTrack);
+    updateMediaModeFromLocalTracks();
+    syncLocalPreview();
+    syncMediaButtons();
+    addLog('화면공유를 시작했습니다.');
+  } catch (error) {
+    console.error('Screen share start failed:', error);
+    setJoinMessage('화면공유를 시작하지 못했습니다. 브라우저 권한 또는 기기 설정을 확인해주세요.');
+    state.isScreenSharing = false;
+    state.screenStream = null;
+    state.screenShareStopHandler = null;
+    syncMediaButtons();
+  }
+}
+
+async function stopScreenShare(fromEnded = false) {
+  if (!state.isScreenSharing) {
+    return;
+  }
+
+  const stream = state.screenStream;
+  const screenTrack = getStreamVideoTrack(stream);
+
+  if (screenTrack && state.screenShareStopHandler) {
+    try {
+      screenTrack.removeEventListener('ended', state.screenShareStopHandler);
+    } catch (_error) {
+      // no-op
+    }
+  }
+
+  state.isScreenSharing = false;
+  state.screenShareStopHandler = null;
+  state.screenStream = null;
+
+  if (stream) {
+    for (const track of stream.getTracks()) {
+      if (!fromEnded || track.readyState === 'live') {
+        track.stop();
+      }
+    }
+  }
+
+  let restoreTrack = null;
+  if (state.cameraTrackBeforeShare && state.cameraTrackBeforeShare.readyState === 'live') {
+    restoreTrack = state.cameraTrackBeforeShare;
+  }
+
+  if (!state.localStream) {
+    state.localStream = new MediaStream();
+  }
+
+  for (const track of state.localStream.getVideoTracks()) {
+    state.localStream.removeTrack(track);
+  }
+
+  if (restoreTrack) {
+    state.localStream.addTrack(restoreTrack);
+  }
+
+  await replaceOutgoingVideoTrack(restoreTrack);
+  updateMediaModeFromLocalTracks();
+  syncLocalPreview();
+  syncMediaButtons();
+  addLog(restoreTrack ? '화면공유를 종료하고 카메라로 복귀했습니다.' : '화면공유를 종료했습니다.');
+}
+
+async function toggleVirtual() {
+  if (state.isScreenSharing) {
+    await stopScreenShare(false);
+    return;
+  }
+  await startScreenShare();
 }
 
 function resetStateAfterLeave() {
+  const activeScreenStream = state.screenStream;
+
   state.joined = false;
   state.localId = null;
   state.mediaMode = 'none';
   state.roomId = '';
   state.displayName = '';
   state.joinCounter = 0;
+  state.isScreenSharing = false;
+  state.screenShareStopHandler = null;
+  state.screenStream = null;
   state.virtualEnabled = false;
 
   closeAllPeerConnections();
@@ -1749,7 +2015,16 @@ function resetStateAfterLeave() {
       track.stop();
     }
   }
+  if (activeScreenStream) {
+    for (const track of activeScreenStream.getTracks()) {
+      track.stop();
+    }
+  }
+  if (state.cameraTrackBeforeShare && state.cameraTrackBeforeShare.readyState === 'live') {
+    state.cameraTrackBeforeShare.stop();
+  }
   state.localStream = null;
+  state.cameraTrackBeforeShare = null;
 
   layoutSeats();
   updateParticipantList();
@@ -1880,7 +2155,11 @@ function bindEvents() {
   elements.joinForm.addEventListener('submit', joinMeeting);
   elements.audioBtn.addEventListener('click', toggleAudio);
   elements.videoBtn.addEventListener('click', toggleVideo);
-  elements.virtualBtn.addEventListener('click', toggleVirtual);
+  elements.virtualBtn.addEventListener('click', () => {
+    toggleVirtual().catch((error) => {
+      console.error('Screen share toggle failed:', error);
+    });
+  });
   elements.leaveBtn.addEventListener('click', () => leaveMeeting(true));
 
   window.addEventListener('beforeunload', () => {
