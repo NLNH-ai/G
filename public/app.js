@@ -8,6 +8,7 @@ const RTC_CONFIG = {
   iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
 };
 const MAX_LOG = 8;
+const FORCE_SIMPLE_CAMERA_MODE = true;
 const AVATAR_PALETTES = [
   {
     fur: '#eceef3',
@@ -108,7 +109,7 @@ const state = {
   peerConnections: new Map(),
   renderFrameId: null,
   roomId: '',
-  virtualEnabled: true,
+  virtualEnabled: false,
   ws: null,
 };
 
@@ -178,7 +179,7 @@ class ParticipantView {
       });
     }
 
-    if (state.virtualEnabled) {
+    if (!FORCE_SIMPLE_CAMERA_MODE && state.virtualEnabled) {
       this.ensurePoseEstimator();
     }
   }
@@ -256,7 +257,7 @@ class ParticipantView {
     const canRenderVideo = this.canRenderVideo();
 
     if (canRenderVideo) {
-      if (state.virtualEnabled) {
+      if (!FORCE_SIMPLE_CAMERA_MODE && state.virtualEnabled) {
         this.ensurePoseEstimator();
         this.requestPose(now);
         this.drawAvatarCharacter(cssWidth, cssHeight, now);
@@ -1615,13 +1616,16 @@ async function prepareLocalStream() {
 
 function syncMediaButtons() {
   const stream = state.localStream;
+  state.virtualEnabled = false;
+
   if (!stream) {
     elements.audioBtn.disabled = false;
     elements.videoBtn.disabled = false;
-    elements.virtualBtn.disabled = false;
+    elements.virtualBtn.disabled = true;
     updateToggleButton(elements.audioBtn, '마이크 켜짐', '마이크 꺼짐', true);
     updateToggleButton(elements.videoBtn, '카메라 켜짐', '카메라 꺼짐', true);
-    updateToggleButton(elements.virtualBtn, '버추얼 캐릭터 켜짐', '버추얼 캐릭터 꺼짐', true);
+    elements.virtualBtn.textContent = '일반 카메라 모드';
+    elements.virtualBtn.classList.remove('active');
     return;
   }
 
@@ -1640,15 +1644,15 @@ function syncMediaButtons() {
   if (videoTrack) {
     elements.videoBtn.disabled = false;
     updateToggleButton(elements.videoBtn, '카메라 켜짐', '카메라 꺼짐', videoTrack.enabled);
-    elements.virtualBtn.disabled = false;
-    updateToggleButton(elements.virtualBtn, '버추얼 캐릭터 켜짐', '버추얼 캐릭터 꺼짐', state.virtualEnabled);
+    elements.virtualBtn.disabled = true;
+    elements.virtualBtn.textContent = '일반 카메라 모드';
+    elements.virtualBtn.classList.remove('active');
   } else {
     elements.videoBtn.disabled = true;
     elements.videoBtn.textContent = '카메라 없음';
     elements.videoBtn.classList.remove('active');
     elements.virtualBtn.disabled = true;
-    state.virtualEnabled = false;
-    elements.virtualBtn.textContent = '버추얼 캐릭터 꺼짐';
+    elements.virtualBtn.textContent = '일반 카메라 모드';
     elements.virtualBtn.classList.remove('active');
   }
 }
@@ -1719,23 +1723,7 @@ function toggleVideo() {
 }
 
 function toggleVirtual() {
-  if (!state.localStream || !state.localStream.getVideoTracks().length) {
-    setJoinMessage('카메라가 연결되어야 버추얼 캐릭터를 사용할 수 있습니다.');
-    return;
-  }
-
-  state.virtualEnabled = !state.virtualEnabled;
-  updateToggleButton(elements.virtualBtn, '버추얼 캐릭터 켜짐', '버추얼 캐릭터 꺼짐', state.virtualEnabled);
-
-  if (!state.virtualEnabled) {
-    for (const view of state.participantViews.values()) {
-      view.poseLandmarks = null;
-    }
-  } else {
-    for (const view of state.participantViews.values()) {
-      view.ensurePoseEstimator();
-    }
-  }
+  setJoinMessage('현재는 일반 카메라 모드로 고정되어 있습니다.');
 }
 
 function resetStateAfterLeave() {
@@ -1745,7 +1733,7 @@ function resetStateAfterLeave() {
   state.roomId = '';
   state.displayName = '';
   state.joinCounter = 0;
-  state.virtualEnabled = true;
+  state.virtualEnabled = false;
 
   closeAllPeerConnections();
 
