@@ -9,6 +9,7 @@ const HOST = process.env.HOST || '0.0.0.0';
 const PORT = Number(process.env.PORT || 3000);
 const PUBLIC_DIR = path.join(__dirname, 'public');
 const MAX_PARTICIPANTS = 3;
+const MAX_WS_MESSAGE_BYTES = 2 * 1024 * 1024;
 
 const rooms = new Map();
 
@@ -58,12 +59,76 @@ function encodeFrame(payload, opcode) {
   return Buffer.concat([header, data]);
 }
 
+function resetFragmentState(client) {
+  client.fragmentOpcode = null;
+  client.fragmentParts = [];
+  client.fragmentBytes = 0;
+}
+
+function routeFrame(client, fin, opcode, payload) {
+  // Control frames must not be fragmented.
+  if (opcode >= 0x8) {
+    if (!fin) {
+      closeClient(client);
+      return;
+    }
+    handleFrame(client, opcode, payload);
+    return;
+  }
+
+  // Continuation frame.
+  if (opcode === 0x0) {
+    if (!client.fragmentOpcode) {
+      closeClient(client);
+      return;
+    }
+
+    client.fragmentParts.push(payload);
+    client.fragmentBytes += payload.length;
+    if (client.fragmentBytes > MAX_WS_MESSAGE_BYTES) {
+      closeClient(client);
+      return;
+    }
+
+    if (!fin) {
+      return;
+    }
+
+    const fullPayload = Buffer.concat(client.fragmentParts, client.fragmentBytes);
+    const assembledOpcode = client.fragmentOpcode;
+    resetFragmentState(client);
+    handleFrame(client, assembledOpcode, fullPayload);
+    return;
+  }
+
+  // New data frame while previous fragmented message is unfinished.
+  if (client.fragmentOpcode) {
+    closeClient(client);
+    return;
+  }
+
+  if (payload.length > MAX_WS_MESSAGE_BYTES) {
+    closeClient(client);
+    return;
+  }
+
+  if (!fin) {
+    client.fragmentOpcode = opcode;
+    client.fragmentParts = [payload];
+    client.fragmentBytes = payload.length;
+    return;
+  }
+
+  handleFrame(client, opcode, payload);
+}
+
 function decodeFrames(client, chunk) {
   client.buffer = Buffer.concat([client.buffer, chunk]);
 
   while (client.buffer.length >= 2) {
     const first = client.buffer[0];
     const second = client.buffer[1];
+    const fin = (first & 0x80) !== 0;
     const opcode = first & 0x0f;
     const isMasked = (second & 0x80) !== 0;
     let payloadLength = second & 0x7f;
@@ -88,6 +153,11 @@ function decodeFrames(client, chunk) {
       offset += 8;
     }
 
+    if (payloadLength > MAX_WS_MESSAGE_BYTES) {
+      closeClient(client);
+      return;
+    }
+
     const maskOffset = isMasked ? 4 : 0;
     const fullLength = offset + maskOffset + payloadLength;
 
@@ -107,7 +177,7 @@ function decodeFrames(client, chunk) {
     }
 
     client.buffer = client.buffer.subarray(fullLength);
-    handleFrame(client, opcode, payload);
+    routeFrame(client, fin, opcode, payload);
   }
 }
 
@@ -291,6 +361,7 @@ function closeClient(client) {
     return;
   }
   client.closed = true;
+  resetFragmentState(client);
   removeClientFromRoom(client);
 
   if (client.socket && !client.socket.destroyed) {
@@ -427,6 +498,9 @@ server.on('upgrade', (req, socket) => {
   const client = {
     buffer: Buffer.alloc(0),
     closed: false,
+    fragmentBytes: 0,
+    fragmentOpcode: null,
+    fragmentParts: [],
     id: null,
     name: null,
     roomId: null,
