@@ -211,6 +211,7 @@ body {
   overflow: hidden;
   border: 1px solid rgba(255, 255, 255, 0.14);
   background: radial-gradient(circle at 50% 20%, #1d355f, #0a1328 60%);
+  cursor: zoom-in;
 }
 
 .seat-canvas {
@@ -316,6 +317,84 @@ body {
 .control:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+.focus-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1200;
+  display: grid;
+  place-items: center;
+  padding: 16px;
+  background: rgba(2, 6, 14, 0.88);
+}
+
+.focus-panel {
+  width: min(95vw, 1400px);
+  height: min(92vh, 880px);
+  border-radius: 20px;
+  border: 1px solid rgba(180, 213, 245, 0.3);
+  background: linear-gradient(180deg, rgba(15, 28, 56, 0.97), rgba(8, 16, 32, 0.97));
+  box-shadow: 0 28px 55px rgba(0, 0, 0, 0.5);
+  padding: 12px;
+  display: grid;
+  grid-template-rows: auto auto 1fr;
+  gap: 10px;
+}
+
+.focus-close-btn {
+  justify-self: end;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 10px;
+  padding: 7px 12px;
+  background: rgba(0, 0, 0, 0.35);
+  color: var(--text-main);
+  font: inherit;
+  font-size: 0.82rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.focus-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 2px;
+}
+
+.focus-header strong {
+  font-size: 1rem;
+}
+
+.focus-header span {
+  color: var(--accent-soft);
+  font-size: 0.86rem;
+}
+
+.focus-video-wrap {
+  position: relative;
+  border-radius: 14px;
+  overflow: hidden;
+  background: #000;
+}
+
+#focus-video {
+  width: 100%;
+  height: 100%;
+  display: block;
+  object-fit: contain;
+  background: #000;
+}
+
+.focus-empty {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  margin: 0;
+  color: rgba(226, 236, 248, 0.8);
+  font-size: 0.92rem;
+  background: rgba(0, 0, 0, 0.55);
 }
 
 @media (max-width: 1020px) {

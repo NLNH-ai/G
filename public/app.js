@@ -80,6 +80,12 @@ const elements = {
   capacityText: document.getElementById('capacity-text'),
   connectionStatus: document.getElementById('connection-status'),
   eventLog: document.getElementById('event-log'),
+  focusCloseBtn: document.getElementById('focus-close-btn'),
+  focusEmpty: document.getElementById('focus-empty'),
+  focusName: document.getElementById('focus-name'),
+  focusOverlay: document.getElementById('focus-overlay'),
+  focusRole: document.getElementById('focus-role'),
+  focusVideo: document.getElementById('focus-video'),
   joinBtn: document.getElementById('join-btn'),
   joinForm: document.getElementById('join-form'),
   joinMessage: document.getElementById('join-message'),
@@ -90,6 +96,7 @@ const elements = {
   participantList: document.getElementById('participant-list'),
   roomInput: document.getElementById('room-input'),
   roomTitle: document.getElementById('room-title'),
+  seatGrid: document.querySelector('.seat-grid'),
   seatTemplate: document.getElementById('seat-template'),
   videoBtn: document.getElementById('video-btn'),
   virtualBtn: document.getElementById('virtual-btn'),
@@ -105,6 +112,7 @@ const slotElements = SLOT_ORDER.reduce((acc, slotName) => {
 const state = {
   cameraTrackBeforeShare: null,
   displayName: '',
+  focusParticipantId: null,
   intentionalLeave: false,
   isScreenSharing: false,
   joinCounter: 0,
@@ -142,6 +150,7 @@ class ParticipantView {
 
     const node = elements.seatTemplate.content.firstElementChild.cloneNode(true);
     this.root = node;
+    this.root.dataset.participantId = this.id;
     this.canvas = node.querySelector('.seat-canvas');
     this.ctx = this.canvas.getContext('2d');
     this.video = node.querySelector('.seat-video');
@@ -171,6 +180,9 @@ class ParticipantView {
   updateName(name) {
     this.name = name || '참석자';
     this.nameEl.textContent = this.name;
+    if (state.focusParticipantId === this.id) {
+      syncFocusView();
+    }
   }
 
   attachStream(stream) {
@@ -191,6 +203,10 @@ class ParticipantView {
 
     if (!FORCE_SIMPLE_CAMERA_MODE && state.virtualEnabled) {
       this.ensurePoseEstimator();
+    }
+
+    if (state.focusParticipantId === this.id) {
+      syncFocusView();
     }
   }
 
@@ -806,6 +822,9 @@ class ParticipantView {
     }
     this.root.remove();
     this.video.srcObject = null;
+    if (state.focusParticipantId === this.id) {
+      closeFocusView();
+    }
   }
 }
 
@@ -996,6 +1015,129 @@ function isScreenTrack(track) {
 
 function isScreenStream(stream) {
   return isScreenTrack(getStreamVideoTrack(stream));
+}
+
+function setFocusOverlayVisible(visible) {
+  if (!elements.focusOverlay) {
+    return;
+  }
+
+  elements.focusOverlay.classList.toggle('hidden', !visible);
+  elements.focusOverlay.setAttribute('aria-hidden', visible ? 'false' : 'true');
+}
+
+function syncFocusView() {
+  if (!state.focusParticipantId) {
+    setFocusOverlayVisible(false);
+    return;
+  }
+
+  const view = state.participantViews.get(state.focusParticipantId);
+  if (!view) {
+    closeFocusView();
+    return;
+  }
+
+  setFocusOverlayVisible(true);
+
+  if (elements.focusName) {
+    elements.focusName.textContent = view.name || '참석자';
+  }
+  if (elements.focusRole) {
+    elements.focusRole.textContent = view.isLocal ? '나' : '동료';
+  }
+
+  const stream = view.stream;
+  const track = getStreamVideoTrack(stream);
+  const hasVideo = Boolean(track && track.readyState === 'live');
+
+  if (elements.focusVideo) {
+    if (hasVideo) {
+      if (elements.focusVideo.srcObject !== stream) {
+        elements.focusVideo.srcObject = stream;
+      }
+      elements.focusVideo.classList.remove('hidden');
+      if (elements.focusEmpty) {
+        elements.focusEmpty.classList.add('hidden');
+      }
+      elements.focusVideo.play().catch(() => {
+        // Browser autoplay policy can reject; user can click to resume.
+      });
+    } else {
+      elements.focusVideo.srcObject = null;
+      elements.focusVideo.classList.add('hidden');
+      if (elements.focusEmpty) {
+        elements.focusEmpty.classList.remove('hidden');
+      }
+    }
+  }
+}
+
+function openFocusView(participantId) {
+  if (!participantId) {
+    return;
+  }
+
+  state.focusParticipantId = participantId;
+  syncFocusView();
+
+  if (
+    elements.focusOverlay &&
+    typeof elements.focusOverlay.requestFullscreen === 'function' &&
+    !document.fullscreenElement
+  ) {
+    elements.focusOverlay.requestFullscreen().catch(() => {
+      // If fullscreen is blocked, fixed overlay still provides large focus view.
+    });
+  }
+}
+
+function closeFocusView() {
+  state.focusParticipantId = null;
+  setFocusOverlayVisible(false);
+
+  if (elements.focusVideo) {
+    elements.focusVideo.pause();
+    elements.focusVideo.srcObject = null;
+    elements.focusVideo.classList.remove('hidden');
+  }
+  if (elements.focusEmpty) {
+    elements.focusEmpty.classList.add('hidden');
+  }
+
+  if (
+    elements.focusOverlay &&
+    document.fullscreenElement === elements.focusOverlay &&
+    typeof document.exitFullscreen === 'function'
+  ) {
+    document.exitFullscreen().catch(() => {
+      // no-op
+    });
+  }
+}
+
+function handleSeatDoubleClick(event) {
+  const target = event.target instanceof HTMLElement ? event.target : null;
+  if (!target) {
+    return;
+  }
+
+  const card = target.closest('.seat-card');
+  if (!card) {
+    return;
+  }
+
+  const participantId = card.dataset.participantId;
+  if (!participantId) {
+    return;
+  }
+
+  if (state.focusParticipantId === participantId) {
+    closeFocusView();
+    return;
+  }
+
+  openFocusView(participantId);
 }
 
 function getSocketUrl() {
@@ -2035,6 +2177,7 @@ async function toggleVirtual() {
 
 function resetStateAfterLeave() {
   const activeScreenStream = state.screenStream;
+  closeFocusView();
 
   state.joined = false;
   state.localId = null;
@@ -2043,6 +2186,7 @@ function resetStateAfterLeave() {
   state.roomId = '';
   state.displayName = '';
   state.joinCounter = 0;
+  state.focusParticipantId = null;
   state.isScreenSharing = false;
   state.screenShareStopHandler = null;
   state.screenStream = null;
@@ -2214,10 +2358,28 @@ function bindEvents() {
     elements.zoomInBtn.addEventListener('click', () => zoomLocalView(LOCAL_VIEW_ZOOM_STEP));
   }
   elements.leaveBtn.addEventListener('click', () => leaveMeeting(true));
+  if (elements.seatGrid) {
+    elements.seatGrid.addEventListener('dblclick', handleSeatDoubleClick);
+  }
+  if (elements.focusCloseBtn) {
+    elements.focusCloseBtn.addEventListener('click', closeFocusView);
+  }
+  if (elements.focusOverlay) {
+    elements.focusOverlay.addEventListener('click', (event) => {
+      if (event.target === elements.focusOverlay) {
+        closeFocusView();
+      }
+    });
+  }
 
   window.addEventListener('beforeunload', () => {
     if (state.ws && state.ws.readyState === WebSocket.OPEN) {
       state.ws.send(JSON.stringify({ type: 'leave' }));
+    }
+  });
+  window.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape' && state.focusParticipantId) {
+      closeFocusView();
     }
   });
 }
