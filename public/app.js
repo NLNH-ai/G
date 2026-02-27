@@ -9,9 +9,6 @@ const RTC_CONFIG = {
 };
 const MAX_LOG = 8;
 const FORCE_SIMPLE_CAMERA_MODE = true;
-const MIN_LOCAL_VIEW_ZOOM = 1;
-const MAX_LOCAL_VIEW_ZOOM = 2.2;
-const LOCAL_VIEW_ZOOM_STEP = 0.2;
 const AVATAR_PALETTES = [
   {
     fur: '#eceef3',
@@ -100,8 +97,6 @@ const elements = {
   seatTemplate: document.getElementById('seat-template'),
   videoBtn: document.getElementById('video-btn'),
   virtualBtn: document.getElementById('virtual-btn'),
-  zoomInBtn: document.getElementById('zoom-in-btn'),
-  zoomOutBtn: document.getElementById('zoom-out-btn'),
 };
 
 const slotElements = SLOT_ORDER.reduce((acc, slotName) => {
@@ -119,7 +114,6 @@ const state = {
   joined: false,
   localId: null,
   mediaMode: 'none',
-  localViewZoom: MIN_LOCAL_VIEW_ZOOM,
   localStream: null,
   participantViews: new Map(),
   peerConnections: new Map(),
@@ -312,21 +306,24 @@ class ParticipantView {
   }
 
   drawSimpleVideo(width, height) {
-    const x = width * 0.14;
-    const y = height * 0.08;
-    const w = width * 0.72;
-    const h = height * 0.82;
-    const zoom = this.isLocal ? state.localViewZoom : 1;
+    const padding = isScreenStream(this.stream) ? 0.04 : 0.08;
+    const x = width * padding;
+    const y = height * (padding + 0.02);
+    const w = width * (1 - padding * 2);
+    const h = height * (1 - padding * 2.2);
+    const zoom = 1;
 
     this.ctx.save();
     roundedRectPath(this.ctx, x, y, w, h, 24);
     this.ctx.clip();
-    if (this.isLocal && !isScreenStream(this.stream)) {
+    const isScreen = isScreenStream(this.stream);
+    const coverOptions = { zoom, contain: isScreen };
+    if (this.isLocal && !isScreen) {
       this.ctx.translate(x + w, y);
       this.ctx.scale(-1, 1);
-      drawCoverImage(this.ctx, this.video, 0, 0, w, h, zoom);
+      drawCoverImage(this.ctx, this.video, 0, 0, w, h, coverOptions);
     } else {
-      drawCoverImage(this.ctx, this.video, x, y, w, h, zoom);
+      drawCoverImage(this.ctx, this.video, x, y, w, h, coverOptions);
     }
     this.ctx.restore();
   }
@@ -965,7 +962,7 @@ function roundedRectPath(ctx, x, y, w, h, r) {
   ctx.closePath();
 }
 
-function drawCoverImage(ctx, source, x, y, width, height, zoom = 1) {
+function drawCoverImage(ctx, source, x, y, width, height, { zoom = 1, contain = false } = {}) {
   const sourceWidth = source.videoWidth || source.width;
   const sourceHeight = source.videoHeight || source.height;
 
@@ -973,10 +970,13 @@ function drawCoverImage(ctx, source, x, y, width, height, zoom = 1) {
     return;
   }
 
-  const scale = Math.max(width / sourceWidth, height / sourceHeight);
-  const normalizedZoom = clamp(Number(zoom) || 1, MIN_LOCAL_VIEW_ZOOM, MAX_LOCAL_VIEW_ZOOM);
-  const cropWidth = width / scale / normalizedZoom;
-  const cropHeight = height / scale / normalizedZoom;
+  const baseScale = contain
+    ? Math.min(width / sourceWidth, height / sourceHeight)
+    : Math.max(width / sourceWidth, height / sourceHeight);
+  const normalizedZoom = Math.max(0.5, Number(zoom) || 1);
+  const scale = baseScale * normalizedZoom;
+  const cropWidth = width / scale;
+  const cropHeight = height / scale;
   const cropX = Math.max(0, (sourceWidth - cropWidth) / 2);
   const cropY = Math.max(0, (sourceHeight - cropHeight) / 2);
 
@@ -1536,42 +1536,6 @@ function canShareScreen() {
   return Boolean(navigator.mediaDevices && typeof navigator.mediaDevices.getDisplayMedia === 'function');
 }
 
-function hasLocalVideoTrack() {
-  return Boolean(state.localStream && getStreamVideoTrack(state.localStream));
-}
-
-function syncZoomButtons() {
-  const zoomInBtn = elements.zoomInBtn;
-  const zoomOutBtn = elements.zoomOutBtn;
-  if (!zoomInBtn || !zoomOutBtn) {
-    return;
-  }
-
-  const canZoom = state.joined && hasLocalVideoTrack();
-  const displayZoom = state.localViewZoom.toFixed(1);
-
-  zoomOutBtn.textContent = `축소 - (${displayZoom}x)`;
-  zoomInBtn.textContent = `확대 + (${displayZoom}x)`;
-
-  if (!canZoom) {
-    zoomOutBtn.disabled = true;
-    zoomInBtn.disabled = true;
-    return;
-  }
-
-  zoomOutBtn.disabled = state.localViewZoom <= MIN_LOCAL_VIEW_ZOOM;
-  zoomInBtn.disabled = state.localViewZoom >= MAX_LOCAL_VIEW_ZOOM;
-}
-
-function setLocalViewZoom(nextZoom) {
-  state.localViewZoom = clamp(nextZoom, MIN_LOCAL_VIEW_ZOOM, MAX_LOCAL_VIEW_ZOOM);
-  syncZoomButtons();
-}
-
-function zoomLocalView(step) {
-  setLocalViewZoom(Number((state.localViewZoom + step).toFixed(2)));
-}
-
 function syncShareButton() {
   const button = elements.virtualBtn;
   if (!button) {
@@ -1937,7 +1901,6 @@ function syncMediaButtons() {
     updateToggleButton(elements.audioBtn, '마이크 켜짐', '마이크 꺼짐', true);
     updateToggleButton(elements.videoBtn, '카메라 켜짐', '카메라 꺼짐', true);
     syncShareButton();
-    syncZoomButtons();
     return;
   }
 
@@ -1963,7 +1926,6 @@ function syncMediaButtons() {
   }
 
   syncShareButton();
-  syncZoomButtons();
 }
 
 function updateMediaModeFromLocalTracks() {
@@ -2182,7 +2144,6 @@ function resetStateAfterLeave() {
   state.joined = false;
   state.localId = null;
   state.mediaMode = 'none';
-  state.localViewZoom = MIN_LOCAL_VIEW_ZOOM;
   state.roomId = '';
   state.displayName = '';
   state.joinCounter = 0;
@@ -2351,12 +2312,6 @@ function bindEvents() {
       console.error('Screen share toggle failed:', error);
     });
   });
-  if (elements.zoomOutBtn) {
-    elements.zoomOutBtn.addEventListener('click', () => zoomLocalView(-LOCAL_VIEW_ZOOM_STEP));
-  }
-  if (elements.zoomInBtn) {
-    elements.zoomInBtn.addEventListener('click', () => zoomLocalView(LOCAL_VIEW_ZOOM_STEP));
-  }
   elements.leaveBtn.addEventListener('click', () => leaveMeeting(true));
   if (elements.seatGrid) {
     elements.seatGrid.addEventListener('dblclick', handleSeatDoubleClick);
