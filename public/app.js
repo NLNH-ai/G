@@ -271,24 +271,25 @@ class ParticipantView {
     this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     this.ctx.clearRect(0, 0, cssWidth, cssHeight);
 
-    drawSeatBackground(this.ctx, cssWidth, cssHeight);
-    drawChairBack(this.ctx, cssWidth, cssHeight);
-
     const canRenderVideo = this.canRenderVideo();
 
     if (canRenderVideo) {
+      drawVideoBackdrop(this.ctx, cssWidth, cssHeight);
+      this.drawSimpleVideo(cssWidth, cssHeight);
+    } else {
+      drawSeatBackground(this.ctx, cssWidth, cssHeight);
+      drawChairBack(this.ctx, cssWidth, cssHeight);
+
       if (!FORCE_SIMPLE_CAMERA_MODE && state.virtualEnabled) {
         this.ensurePoseEstimator();
         this.requestPose(now);
         this.drawAvatarCharacter(cssWidth, cssHeight, now);
       } else {
-        this.drawSimpleVideo(cssWidth, cssHeight);
+        drawPlaceholder(this.ctx, cssWidth, cssHeight, '카메라 대기중');
       }
-    } else {
-      drawPlaceholder(this.ctx, cssWidth, cssHeight, '카메라 대기중');
-    }
 
-    drawChairFront(this.ctx, cssWidth, cssHeight);
+      drawChairFront(this.ctx, cssWidth, cssHeight);
+    }
     this.ctx.setTransform(1, 0, 0, 1, 0, 0);
   }
 
@@ -981,6 +982,29 @@ function drawCoverImage(ctx, source, x, y, width, height, { zoom = 1, contain = 
   const cropY = Math.max(0, (sourceHeight - cropHeight) / 2);
 
   ctx.drawImage(source, cropX, cropY, cropWidth, cropHeight, x, y, width, height);
+}
+
+function drawVideoBackdrop(ctx, width, height) {
+  const inset = 8;
+  const x = inset;
+  const y = inset;
+  const w = width - inset * 2;
+  const h = height - inset * 2;
+
+  const bg = ctx.createLinearGradient(0, 0, 0, h);
+  bg.addColorStop(0, '#11182f');
+  bg.addColorStop(1, '#0a1022');
+
+  ctx.save();
+  roundedRectPath(ctx, x, y, w, h, 20);
+  ctx.clip();
+  ctx.fillStyle = bg;
+  ctx.fillRect(x, y, w, h);
+
+  ctx.strokeStyle = 'rgba(90, 140, 255, 0.35)';
+  ctx.lineWidth = 2;
+  ctx.stroke();
+  ctx.restore();
 }
 
 function getStreamVideoTrack(stream) {
